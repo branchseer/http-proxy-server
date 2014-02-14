@@ -20,7 +20,6 @@ module.exports = (function () {
     });
   
     proxyRequest.on('error', function (e) {
-      console.log(e);
       response.end();
     });
   
@@ -43,7 +42,6 @@ module.exports = (function () {
     proxySocket.pipe(socket);
     proxySocket.on('error', function (e) {
       socket.end();
-      console.log(e);
     });
 
     this.emit('connection', request, proxySocket);
