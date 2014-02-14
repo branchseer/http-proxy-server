@@ -59,6 +59,10 @@ module.exports = (function () {
     http.Server.prototype.listen.apply(this._server, arguments);
   };
 
+  HttpProxyServer.prototype.close = function () {
+    http.Server.prototype.close.apply(this._server, arguments);
+  };
+
   return HttpProxyServer;
 })();
 
