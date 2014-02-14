@@ -1,6 +1,6 @@
 {
   "name": "http-proxy-server",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A Node.js HTTP proxy server supporting HTTP tunnelling",
   "main": "index.js",
   "scripts": {
