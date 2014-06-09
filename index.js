@@ -9,23 +9,26 @@ var events = require("events");
 module.exports = (function () {
   var HTTP_TUNNEL_OK = new Buffer('HTTP/1.1 200 Connection established\r\n\r\n');
 
-  var handleHttp = function (request, response) {
-    var requestOption = url.parse(request.url);
-    requestOption.method = request.method;
-    requestOption.headers = request.headers;
+  var handleHttp = function (c2pRequest, p2cResponse) {
+    var p2sRequestOption = url.parse(c2pRequest.url);
+    p2sRequestOption.method = c2pRequest.method;
+    p2sRequestOption.headers = c2pRequest.headers;
+    
+    delete p2sRequestOption.headers['Proxy-Connection'];
+    p2sRequestOption.headers['Connection'] = 'close';
   
-    var proxyRequest = http.request(requestOption, function (proxyResponse) {
-      response.writeHead(proxyResponse.statusCode, proxyResponse.headers);
-      proxyResponse.pipe(response);//Redirect target server's response to proxy client
+    var p2sRequest = http.request(p2sRequestOption, function (s2pResponse) {
+      p2cResponse.writeHead(s2pResponse.statusCode, s2pResponse.headers);
+      s2pResponse.pipe(p2cResponse);//Redirect target server's response to proxy client
+    });
+    
+    p2sRequest.on('error', function (e) {
+      p2cResponse.end();
     });
   
-    proxyRequest.on('error', function (e) {
-      response.end();
-    });
-  
-    request.pipe(proxyRequest);//Redirect proxy client's body to target server
+    c2pRequest.pipe(p2sRequest);//Redirect proxy client's body to target server
 
-    this.emit('connection', request, proxyRequest);
+    this.emit('connection', c2pRequest, p2sRequest);
   };
 
   var handleTunneling = function (request, socket, head) {
