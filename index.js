@@ -133,6 +133,14 @@ module.exports = (function () {
       return handleHttp.call(self, false, req, res);
     });//Handle common http requests
 
+    this._server.on('listening', function () {
+      self.emit('listening');
+    });
+
+    this._server.on('error', function (e) {
+      self.emit('error', e);
+    });
+
     this._server.on('connect', handleTunneling.bind(this));//Http tunneling
 
     this.fallback = function (req, res) {
