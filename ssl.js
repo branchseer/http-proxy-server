@@ -12,8 +12,6 @@ module.exports = (function () {
   function HttpsProxyServer(httpsOpts, targetHost, targetPort) {
     events.EventEmitter.call(this);
     var self = this;
-    this._host = targetHost;
-    this._port = targetPort;
 
     this._httpsServer = https.createServer(httpsOpts, function (req, res) {
       req.url = 'https://' + targetHost + ':' + targetPort + req.url
@@ -25,7 +23,7 @@ module.exports = (function () {
     });
 
     this._httpsServer.on('error', function (err) {
-      if (err.code == 'EADDRINUSE') {
+      if (err.code === 'EADDRINUSE') {
         if (HttpsProxyServer.port >= MAX_PORT) {
           HttpsProxyServer.port = INIT_PORT;
         }

@@ -8,27 +8,21 @@ var events = require("events");
 var fs = require('fs');
 var path = require('path');
 var https = require('https');
+var domain = require('domain');
 var HttpsProxyServer = require('./ssl')
 
-
-var certFolder = '/Users/patr0nus/repo/Cellist/build/certs';
-var keyPath = path.join(certFolder, 'privatekey.pem');
-var certPath = path.join(certFolder, 'certificate.pem')
-var httpsOpts = {
-  key: fs.readFileSync(keyPath),
-  cert: fs.readFileSync(certPath)
-}
 
 
 module.exports = (function () {
   var HTTP_TUNNEL_OK = new Buffer('HTTP/1.1 200 Connection established\r\n\r\n');
   var errorResponse = function (res) {
-    console.log("Bad Gateway");
     res.writeHead(502, 'text/plain');
     res.end('Bad Gateway');
   };
 
   var handleHttp = function (isSSL, c2pRequest, p2cResponse) {
+    //c2pRequest.pause();
+
     var self = this;
 
     var p2sRequestOption = url.parse(c2pRequest.url);
@@ -38,19 +32,20 @@ module.exports = (function () {
     delete p2sRequestOption.headers['proxy-connection'];
       
     var p2sRequest = (isSSL ? https : http).request(p2sRequestOption, function (s2pResponse) {
-      s2pResponse.on('error', function (e) {
+      s2pResponse.once('error', function (e) {
         errorResponse(p2cResponse);
       });
       
       p2cResponse.writeHead(s2pResponse.statusCode, s2pResponse.headers);
+      //c2pRequest.resume();
       s2pResponse.pipe(p2cResponse);//Redirect target server's response to proxy client
     });
     
-    p2sRequest.on('error', function (e) {
+    p2sRequest.once('error', function (e) {
       errorResponse(p2cResponse);
     });
     
-    c2pRequest.on('error', function (e) {
+    c2pRequest.once('error', function (e) {
       p2cResponse.end();
     })
   
@@ -60,6 +55,7 @@ module.exports = (function () {
   };
 
   var handleTunneling = function (c2pRequest, p2cSocket, head) {
+    p2cSocket.pause();
     var self = this;
     var url = c2pRequest.url;
     var urlParser = url.split(':');
@@ -75,18 +71,18 @@ module.exports = (function () {
       port: port
     };
 
-    var httpsProxy;
-    if (port === 443) {//SSL Tunnel
+    var httpsProxy, p2sSocket;
+    if (this.httpsOption && port === 443) {//SSL Tunnel
         p2sOpt.host = 'localhost';
 
         if (!(url in this._httpsProxies)) {
           console.log(url);
-          this._httpsProxies[url] = new HttpsProxyServer(httpsOpts, host, port)
-            .on('request', handleHttp.bind(this, true))
+          this._httpsProxies[url] = new HttpsProxyServer(this.httpsOption, host, port)
             .once('listening', function () {
               p2sOpt.port = this.port;
               startConnection();
-            });
+            })
+            .on('request', handleHttp.bind(this, true));
         }
         else {
           p2sOpt.port = this._httpsProxies[url].port;
@@ -95,22 +91,32 @@ module.exports = (function () {
     }
     else {
       startConnection();
-      self.emit('connection', c2pRequest, p2sSocket);
+      
+      process.nextTick(function () {
+        self.emit('connection', c2pRequest, p2sSocket);
+      });
     }
     function startConnection () {
-      var p2sSocket = net.connect(p2sOpt, function () {
-        p2cSocket.write(HTTP_TUNNEL_OK);
-        p2cSocket.pipe(p2sSocket);
-      });
-      
-      p2sSocket.pipe(p2cSocket);
-      p2sSocket.on('error', function (e) {
+      var d = domain.create();
+      p2sSocket = new net.Socket();
+
+      d.add(p2sSocket);
+      d.add(p2cSocket);
+      d.add(c2pRequest);
+      d.run(function () {
+        p2sSocket.connect(p2sOpt.port, p2sOpt.host);
+  
+        p2sSocket.on('connect', function () {
+          p2cSocket.write(HTTP_TUNNEL_OK);
+          p2cSocket.resume();
+          p2cSocket.pipe(p2sSocket);
+        });
+        p2sSocket.pipe(p2cSocket);
+      })
+      d.on('error', function (e) {
         p2cSocket.end();
-      });
-    
-      p2cSocket.on('error', function (e) {
         p2sSocket.end();
-      });
+      })
     }
   };
 
@@ -121,8 +127,8 @@ module.exports = (function () {
     this._httpsProxies = {};
 
     this._server = http.createServer(function (req, res) {
-      if (req.url.indexOf('http://') !== 0) {
-        return this.fallback(c2pRequest, p2cResponse);
+      if (req.url.indexOf('http://') !== 0 && self.fallback) {
+        return self.fallback(req, res);
       }
       return handleHttp.call(self, false, req, res);
     });//Handle common http requests
