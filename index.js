@@ -76,7 +76,6 @@ module.exports = (function () {
         p2sOpt.host = 'localhost';
 
         if (!(url in this._httpsProxies)) {
-          console.log(url);
           this._httpsProxies[url] = new HttpsProxyServer(this.httpsOption, host, port)
             .once('listening', function () {
               p2sOpt.port = this.port;
