@@ -16,42 +16,42 @@ var HttpsProxyServer = require('./ssl')
 module.exports = (function () {
   var HTTP_TUNNEL_OK = new Buffer('HTTP/1.1 200 Connection established\r\n\r\n');
   var errorResponse = function (res) {
-    res.writeHead(502, 'text/plain');
+    res.writeHead(502, { 'content-type': 'text/plain' });
     res.end('Bad Gateway');
   };
 
   var handleHttp = function (isSSL, c2pRequest, p2cResponse) {
     //c2pRequest.pause();
-
     var self = this;
-
-    var p2sRequestOption = url.parse(c2pRequest.url);
-    p2sRequestOption.method = c2pRequest.method;
-    p2sRequestOption.headers = c2pRequest.headers;
-    
-    delete p2sRequestOption.headers['proxy-connection'];
+    this._applyMiddleware(0, c2pRequest, p2cResponse, function () {
+      var p2sRequestOption = url.parse(c2pRequest.url);
+      p2sRequestOption.method = c2pRequest.method;
+      p2sRequestOption.headers = c2pRequest.headers;
       
-    var p2sRequest = (isSSL ? https : http).request(p2sRequestOption, function (s2pResponse) {
-      s2pResponse.once('error', function (e) {
+      delete p2sRequestOption.headers['proxy-connection'];
+        
+      var p2sRequest = (isSSL ? https : http).request(p2sRequestOption, function (s2pResponse) {
+        s2pResponse.once('error', function (e) {
+          errorResponse(p2cResponse);
+        });
+        
+        p2cResponse.writeHead(s2pResponse.statusCode, s2pResponse.headers);
+        //c2pRequest.resume();
+        s2pResponse.pipe(p2cResponse);//Redirect target server's response to proxy client
+      });
+      
+      p2sRequest.once('error', function (e) {
         errorResponse(p2cResponse);
       });
       
-      p2cResponse.writeHead(s2pResponse.statusCode, s2pResponse.headers);
-      //c2pRequest.resume();
-      s2pResponse.pipe(p2cResponse);//Redirect target server's response to proxy client
-    });
+      c2pRequest.once('error', function (e) {
+        p2cResponse.end();
+      })
     
-    p2sRequest.once('error', function (e) {
-      errorResponse(p2cResponse);
+      c2pRequest.pipe(p2sRequest);//Redirect proxy client's body to target server
+      
+      self.emit('connection', c2pRequest, p2sRequest);
     });
-    
-    c2pRequest.once('error', function (e) {
-      p2cResponse.end();
-    })
-  
-    c2pRequest.pipe(p2sRequest);//Redirect proxy client's body to target server
-
-    this.emit('connection', c2pRequest, p2sRequest);
   };
 
   var handleTunneling = function (c2pRequest, p2cSocket, head) {
@@ -60,11 +60,15 @@ module.exports = (function () {
     var url = c2pRequest.url;
     var urlParser = url.split(':');
 
-    if (urlParser.length !== 2) {
-      return p2cSocket.end()
-    }
+    var host, port;
+    
     var host = urlParser[0];
-    var port = parseInt(urlParser[1]);
+    if (urlParser.length == 1) {
+      port = 443;
+    }
+    else {
+      port = parseInt(urlParser[1]);
+    }
     
     var p2sOpt = {
       host: host,
@@ -84,8 +88,15 @@ module.exports = (function () {
             .on('request', handleHttp.bind(this, true));
         }
         else {
-          p2sOpt.port = this._httpsProxies[url].port;
-          startConnection();
+          var httpsProxy = this._httpsProxies[url];
+          if (httpsProxy.port != null) {
+            p2sOpt.port = httpsProxy.port;
+            return startConnection();
+          }
+          httpsProxy.once('listening', function () {
+            p2sOpt.port = httpsProxy.port;
+            startConnection();
+          });
         }
     }
     else {
@@ -102,6 +113,7 @@ module.exports = (function () {
       d.add(p2sSocket);
       d.add(p2cSocket);
       d.add(c2pRequest);
+      
       d.run(function () {
         p2sSocket.connect(p2sOpt.port, p2sOpt.host);
   
@@ -122,7 +134,7 @@ module.exports = (function () {
   function HttpProxyServer () {
     events.EventEmitter.call(this);
     var self = this;
-
+    this._middlewares = []
     this._httpsProxies = {};
 
     this._server = http.createServer(function (req, res) {
@@ -140,7 +152,24 @@ module.exports = (function () {
       self.emit('error', e);
     });
 
+    this._server.on('close', function () {
+      self.emit('close');
+    });
+
     this._server.on('connect', handleTunneling.bind(this));//Http tunneling
+
+    this._connections = []
+    var addConnection = function (incoming) {
+      var index = self._connections.push(incoming) - 1
+      incoming.once('close', function () {
+        self._connections[index] = null
+      });
+      incoming.once('error', function () {
+        self._connections[index] = null
+      });
+    };
+    this._server.on('connect', addConnection);
+    this._server.on('request', addConnection);
 
     this.fallback = function (req, res) {
       res.writeHead(200, 'text/plain');
@@ -149,11 +178,36 @@ module.exports = (function () {
   }
   util.inherits(HttpProxyServer, events.EventEmitter);
 
+  HttpProxyServer.prototype.use = function (middleware) {
+    this._middlewares.push(middleware);
+  };
+
+  HttpProxyServer.prototype._applyMiddleware = function (index, req, res, done) {
+    var self = this;
+    if (index < this._middlewares.length) {
+      this._middlewares[index](req, res, function () {
+        self._applyMiddleware(index + 1, req, res, done)
+      });
+    }
+    else {
+      done();
+    }
+  }
+
   HttpProxyServer.prototype.listen = function () {
     http.Server.prototype.listen.apply(this._server, arguments);
   };
 
   HttpProxyServer.prototype.close = function () {
+    var connection;
+    for (var i = this._connections.length - 1; i >= 0; i--) {
+      connection = this._connections[i];
+      if (connection) {
+        connection.destroy();
+      }
+    }
+    this._connections.length = 0;
+
     http.Server.prototype.close.apply(this._server, arguments);
   };
 
